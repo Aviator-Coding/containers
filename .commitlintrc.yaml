@@ -1,0 +1,34 @@
+---
+# Same convention as home-ops: type(scope): description, kebab-case scope
+# (an app name, github-action, mise or deps).
+extends:
+  - "@commitlint/config-conventional"
+
+rules:
+  type-enum:
+    - 2
+    - always
+    - [feat, fix, chore, ci, docs, refactor, test]
+  scope-empty:
+    - 2
+    - never
+  scope-case:
+    - 2
+    - always
+    - kebab-case
+  subject-case:
+    - 0
+    - always
+    - lower-case
+  header-max-length:
+    - 2
+    - always
+    - 200
+  body-max-line-length:
+    - 0
+    - always
+    - 100
+  footer-max-line-length:
+    - 0
+    - always
+    - 100

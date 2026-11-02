@@ -1,0 +1,206 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+# Builds every app under apps/ whose files changed (or the one named on dispatch).
+#
+# Each app is apps/<app>/{Dockerfile,docker-bake.hcl[,test.sh]}. The bake file
+# holds VERSION and the platforms; docker/metadata-action turns VERSION into the
+# tags and OCI labels; docker/bake-action builds. A pull request builds
+# linux/amd64, loads it and runs test.sh; a push to main (or a dispatch) builds
+# every platform and pushes `<tag>` and `rolling`. Tags are mutable on purpose:
+# a base-image refresh rebuilds the same tag, and consumers (home-ops) pin the
+# digest and let Renovate move it.
+name: Build
+
+on:
+  pull_request:
+    paths:
+      - apps/**
+      - .github/workflows/build.yaml
+  push:
+    branches:
+      - main
+    paths:
+      - apps/**
+      - .github/workflows/build.yaml
+  workflow_dispatch:
+    inputs:
+      app:
+        description: App to build and push (directory name under apps/)
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
+  # Only PR builds are superseded; a push to main must finish so every changed app is published.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  changed:
+    name: Changed apps
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      apps: ${{ steps.apps.outputs.apps }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Changed app directories
+        id: changed
+        if: github.event_name != 'workflow_dispatch'
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
+        with:
+          path: apps
+          dir_names: true
+          dir_names_exclude_current_dir: true
+          dir_names_max_depth: 1
+          json: true
+          escape_json: false
+
+      - name: Workflow changed
+        id: workflow
+        if: github.event_name != 'workflow_dispatch'
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
+        with:
+          files: .github/workflows/build.yaml
+
+      - name: Apps to build
+        id: apps
+        env:
+          EVENT: ${{ github.event_name }}
+          DISPATCH_APP: ${{ inputs.app }}
+          CHANGED: ${{ steps.changed.outputs.all_changed_files }}
+          WORKFLOW_CHANGED: ${{ steps.workflow.outputs.any_changed }}
+        run: |
+          set -euo pipefail
+          # Every app directory that exists on this commit.
+          ALL="$(find apps -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | jq -R . | jq -sc .)"
+          if [ "${EVENT}" = "workflow_dispatch" ]; then
+            APPS="$(jq -cn --arg a "${DISPATCH_APP}" '[$a]')"
+          elif [ "${WORKFLOW_CHANGED}" = "true" ]; then
+            APPS="${ALL}" # a workflow change rebuilds everything
+          else
+            APPS="${CHANGED:-[]}"
+          fi
+          # Only directories that still exist (a deleted app has nothing to build).
+          APPS="$(jq -c --argjson all "${ALL}" '[.[] | select(. as $a | $all | index($a))]' <<<"${APPS}")"
+          echo "apps=${APPS}" >> "$GITHUB_OUTPUT"
+          echo "Building: ${APPS}"
+
+  build:
+    name: ${{ matrix.app }}
+    needs: changed
+    if: ${{ needs.changed.outputs.apps != '[]' && needs.changed.outputs.apps != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJSON(needs.changed.outputs.apps) }}
+    env:
+      APP: ${{ matrix.app }}
+      IMAGE: ghcr.io/aviator-coding/${{ matrix.app }}
+      # Only main publishes: a dispatch on a branch builds and tests like a PR.
+      RELEASE: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Read version and platforms from docker-bake.hcl
+        id: plan
+        run: |
+          set -euo pipefail
+          BAKE="$(docker buildx bake --file "apps/${APP}/docker-bake.hcl" --print image-all)"
+          VERSION="$(jq -r '.target["image-all"].args.VERSION' <<<"${BAKE}")"
+          PLATFORMS="$(jq -r '.target["image-all"].platforms | join(",")' <<<"${BAKE}")"
+          [[ -n "${VERSION}" && "${VERSION}" != "null" ]] || { echo "no VERSION in apps/${APP}/docker-bake.hcl" >&2; exit 1; }
+          # The tag is the version up to the first `~` (Debian package revisions stay out of it).
+          TAG="${VERSION%%~*}"
+          {
+            echo "version=${VERSION}"
+            echo "tag=${TAG}"
+            echo "platforms=${PLATFORMS}"
+            echo "arm=$([[ "${PLATFORMS}" == *arm* ]] && echo true || echo false)"
+          } >> "$GITHUB_OUTPUT"
+          echo "${APP}: version ${VERSION}, tag ${TAG}, platforms ${PLATFORMS}"
+
+      - name: Set up QEMU
+        if: ${{ env.RELEASE == 'true' && steps.plan.outputs.arm == 'true' }}
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Log in to GHCR
+        if: ${{ env.RELEASE == 'true' }}
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ steps.plan.outputs.tag }},enable=${{ env.RELEASE == 'true' }}
+            type=raw,value=rolling,enable=${{ env.RELEASE == 'true' }}
+            type=raw,value=test,enable=${{ env.RELEASE != 'true' }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.plan.outputs.tag }}
+
+      - name: Build
+        id: bake
+        uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e # v7.5.0
+        with:
+          source: ./apps/${{ matrix.app }}
+          files: |
+            ./docker-bake.hcl
+            cwd://${{ steps.meta.outputs.bake-file }}
+          targets: image
+          push: ${{ env.RELEASE == 'true' }}
+          load: ${{ env.RELEASE != 'true' }}
+          set: |
+            *.platform=${{ env.RELEASE == 'true' && steps.plan.outputs.platforms || 'linux/amd64' }}
+            *.cache-from=type=gha,scope=${{ matrix.app }}
+            *.cache-to=type=gha,scope=${{ matrix.app }},mode=max
+
+      - name: Test
+        if: ${{ env.RELEASE != 'true' && hashFiles(format('apps/{0}/test.sh', matrix.app)) != '' }}
+        env:
+          IMAGE: ${{ env.IMAGE }}:test
+          VERSION: ${{ steps.plan.outputs.version }}
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: bash "apps/${APP}/test.sh"
+
+      - name: Summary
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+          PLATFORMS: ${{ steps.plan.outputs.platforms }}
+          DIGEST: ${{ fromJSON(steps.bake.outputs.metadata).image['containerimage.digest'] }}
+        run: |
+          {
+            echo "## ${APP}"
+            echo ""
+            if [ "${RELEASE}" = "true" ]; then
+              echo "- Pushed \`${IMAGE}:${TAG}\` and \`${IMAGE}:rolling\` (${PLATFORMS})"
+              echo "- Digest: \`${DIGEST}\`"
+              echo "- Pin in home-ops as \`${IMAGE}:${TAG}@${DIGEST}\`"
+            else
+              echo "- Built and tested \`${IMAGE}:test\` (linux/amd64), not pushed"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

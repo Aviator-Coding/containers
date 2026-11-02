@@ -1,0 +1,71 @@
+---
+repos:
+  - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
+    rev: v9.27.0
+    hooks:
+      - id: commitlint
+        name: Check commit message
+        stages: [commit-msg]
+        additional_dependencies:
+          - "@commitlint/config-conventional"
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        name: Check large files
+        args: [--maxkb=800]
+      - id: end-of-file-fixer
+        name: Fix EOF
+      - id: mixed-line-ending
+        name: Check mixed line endings
+      - id: check-executables-have-shebangs
+        name: Check executable shebangs
+      - id: check-shebang-scripts-are-executable
+        name: Check files with shebangs being executable
+      - id: trailing-whitespace
+        name: Fix trailing whitespace
+        # A unified diff's blank context line is a single space; stripping it
+        # makes the patch stop applying (apps/*/NNNN-*.patch).
+        exclude: \.patch$
+      - id: check-json
+        name: Check JSON
+      - id: check-toml
+        name: Check TOML
+      - id: check-yaml
+        name: Check YAML
+      - id: detect-private-key
+        name: Detect private keys
+      - id: check-merge-conflict
+        name: Check merge conflicts
+
+  # Linters resolved through mise (`mise exec`) so hooks use the .mise.toml pins.
+  - repo: local
+    hooks:
+      - id: yamllint
+        name: Lint YAML
+        entry: mise exec -- yamllint -s
+        language: system
+        types: [yaml]
+      - id: actionlint
+        name: Lint GitHub workflows
+        entry: mise exec -- actionlint
+        language: system
+        types: [yaml]
+        files: ^\.github/workflows/
+      - id: zizmor
+        name: Audit GitHub workflows
+        entry: mise exec -- zizmor --offline --min-severity medium .github/workflows
+        language: system
+        files: ^\.github/workflows/
+        pass_filenames: false
+      - id: shellcheck
+        name: Lint shell scripts
+        entry: mise exec -- shellcheck
+        language: system
+        types: [shell]
+      - id: yamlfmt
+        name: Format YAML
+        entry: mise exec -- yamlfmt
+        language: system
+        types: [yaml]

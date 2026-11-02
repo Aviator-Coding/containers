@@ -1,0 +1,48 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    "github>Aviator-Coding/mortyops//ci/renovate/default.json5",
+  ],
+  // Merges happen through Renovate (automerge below) once the Build check passes, never by GitHub.
+  platformAutomerge: false,
+  customManagers: [
+    {
+      description: "VERSION in a docker-bake.hcl annotated with `// renovate: datasource=... depName=...`",
+      customType: "regex",
+      managerFilePatterns: ["/(^|/)docker-bake\\.hcl$/"],
+      matchStrings: [
+        "// renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( versioning=(?<versioning>\\S+))?\\n\\s+default = \"(?<currentValue>[^\"]+)\"",
+      ],
+      versioningTemplate: "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}",
+    },
+  ],
+  packageRules: [
+    {
+      description: "TimescaleDB Community Edition Debian packages (trixie) from packagecloud",
+      matchDatasources: ["deb"],
+      matchPackageNames: ["timescaledb-2-postgresql-18"],
+      registryUrls: ["https://packagecloud.io/timescale/timescaledb/debian?suite=trixie&components=main&binaryArch=amd64"],
+    },
+    {
+      description: "Talos tags are vX.Y.Z; keep the v (the image tag is the Talos version)",
+      matchPackageNames: ["ghcr.io/siderolabs/talosctl"],
+      versioning: "semver",
+    },
+    {
+      description: "App bumps: commit as feat(<app>) so the image rebuilds under its new tag",
+      matchFileNames: ["apps/**"],
+      semanticCommitType: "feat",
+      semanticCommitScope: "{{parentDir}}",
+      commitMessageTopic: "{{depName}}",
+      commitMessageExtra: "( {{currentVersion}} → {{newVersion}} )",
+      additionalBranchPrefix: "{{parentDir}}-",
+    },
+    {
+      description: "Automerge everything but major upstream bumps; home-ops decides when to consume a rebuild",
+      matchFileNames: ["apps/**"],
+      matchUpdateTypes: ["minor", "patch", "digest", "pin"],
+      automerge: true,
+      ignoreTests: false,
+    },
+  ],
+}
