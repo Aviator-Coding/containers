@@ -31,7 +31,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
-  cancel-in-progress: true
+  # Only PR builds are superseded; a push to main must finish so every changed app is published.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -108,7 +109,8 @@ jobs:
     env:
       APP: ${{ matrix.app }}
       IMAGE: ghcr.io/aviator-coding/${{ matrix.app }}
-      RELEASE: ${{ github.event_name != 'pull_request' }}
+      # Only main publishes: a dispatch on a branch builds and tests like a PR.
+      RELEASE: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -125,7 +127,7 @@ jobs:
           BAKE="$(docker buildx bake --file "apps/${APP}/docker-bake.hcl" --print image-all)"
           VERSION="$(jq -r '.target["image-all"].args.VERSION' <<<"${BAKE}")"
           PLATFORMS="$(jq -r '.target["image-all"].platforms | join(",")' <<<"${BAKE}")"
-          test -n "${VERSION}" && test "${VERSION}" != "null"
+          [[ -n "${VERSION}" && "${VERSION}" != "null" ]] || { echo "no VERSION in apps/${APP}/docker-bake.hcl" >&2; exit 1; }
           # The tag is the version up to the first `~` (Debian package revisions stay out of it).
           TAG="${VERSION%%~*}"
           {
