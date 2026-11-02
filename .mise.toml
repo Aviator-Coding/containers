@@ -1,0 +1,13 @@
+# Tool pins for the pre-commit hooks. `mise install`, then `mise run setup-dev-env`.
+[tools]
+"python" = "3.14.7"
+"pipx:pre-commit" = "4.7.0"
+"aqua:rhysd/actionlint" = "1.7.12"
+"pipx:zizmor" = "1.31.1"
+"aqua:koalaman/shellcheck" = "0.11.0"
+"pipx:yamllint" = "1.38.0"
+"aqua:google/yamlfmt" = "0.21.0"
+
+[tasks.setup-dev-env]
+description = "Install pre-commit hooks"
+run = "pre-commit install --install-hooks && pre-commit install --hook-type commit-msg"
